@@ -1,56 +1,180 @@
-<!--  Rive full-bleed, flicker-free resize – Bee Game / Dashboard artboard  -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Rive – Bee Game demo</title>
-
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Bee Game</title>
   <style>
-    html, body { height: 100%; margin: 0; }
-    #rive-canvas{
-      position: absolute; inset: 0;
-      width: 100%; height: 100%;
-      background-color:#252525;
+    html, body { height: 100%; margin: 0; background:#fff; font-family: system-ui, sans-serif; }
+    #rive-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    #hud {
+      position: fixed; left: 12px; bottom: 12px; padding: 8px 10px; font-size: 12px;
+      background: rgba(0,0,0,.06); border-radius: 8px; user-select: none;
     }
   </style>
-
-  <script src="https://unpkg.com/@rive-app/canvas"></script>
 </head>
-
 <body>
   <canvas id="rive-canvas"></canvas>
+  <div id="hud">Controls: MOVE THE JOYSTICK!</div>
 
+  <script src="https://unpkg.com/@rive-app/webgl2@2" crossorigin="anonymous"></script>
   <script>
-    /* ─── basic Rive set-up ─── */
-    const riveInstance = new rive.Rive({
-      src: "beegame.riv",                 // your 1920 × 1080 file
-      artboard: "Dashboard",              // <-- specific artboard
-      stateMachines: "State Machine 1",   // <-- specific state machine
-      canvas: document.getElementById("rive-canvas"),
-      autoBind: true,
-      autoplay: true,
+    const layout = new rive.Layout({ fit: rive.Fit.Layout, layoutScaleFactor: 1 });
+    const canvas = document.getElementById('rive-canvas');
+    let riveInstance;
 
-      onLoad() {
-        let boundInstance = rive.viewModelInstance;
-        riveInstance.resizeDrawingSurfaceToCanvas();
-      }
-    });
+    function resizeCanvas(){ try { riveInstance?.resizeDrawingSurfaceToCanvas(); } catch {} }
+    window.addEventListener('resize', resizeCanvas);
+    const mq = window.matchMedia?.(`(resolution: ${devicePixelRatio}dppx)`); mq?.addEventListener?.('change', resizeCanvas);
 
-    /* ─── resize & DPR handling ─── */
-    const DELAY_MS = 1;
-    let timerId = null;
-
-    function scheduleResize() {
-      if (document.hidden) return;
-      clearTimeout(timerId);
-      timerId = setTimeout(() => {
-        riveInstance.resizeDrawingSurfaceToCanvas();
-      }, DELAY_MS);
+    // --- Optional haptics for left/right ---
+    function vibrate(side = 'both') {
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      const gp = pads.find(p => p && p.vibrationActuator) || null;
+      if (!gp?.vibrationActuator) return;
+      try {
+        gp.vibrationActuator.playEffect('dual-rumble', {
+          startDelay: 0, duration: 100,
+          weakMagnitude: side === 'left' ? 1.0 : 0.2,
+          strongMagnitude: side === 'right' ? 1.0 : 0.2
+        });
+      } catch {}
     }
 
-    window.addEventListener('resize', scheduleResize);
-    window.matchMedia(`(resolution:${window.devicePixelRatio}dppx)`)
-          .addEventListener('change', scheduleResize);
+    riveInstance = new rive.Rive({
+      src: 'beegame.riv',
+      canvas,
+      autoplay: true,
+      autoBind: true,
+      artboard: 'Default',
+      stateMachines: 'State Machine 1',
+      layout,
+      onLoad() {
+        const VM_NAME = 'View Model 1';
+        const vm = riveInstance.viewModelByName?.(VM_NAME);
+        if (!vm) return;
+
+        const vmi = vm.defaultInstance?.() || vm.instance?.() || vm.instanceByName?.(vm.instanceNames?.[0] ?? '');
+        if (!vmi) return;
+        riveInstance.bindViewModelInstance?.(vmi);
+
+        // Triggers & properties
+        const L = vmi.trigger?.('L_trig');
+        const R = vmi.trigger?.('R_trig');
+        const RestartTrig = vmi.trigger?.('RestartTrig');
+
+        const StartBool =
+          vmi.bool?.('StartBool') || vmi.boolean?.('StartBool') || vmi.propertyByName?.('StartBool') || null;
+        const DeathProp =
+          vmi.bool?.('Death') || vmi.boolean?.('Death') || vmi.propertyByName?.('Death') || null;
+        const FinishedProp =
+          vmi.bool?.('Finished') || vmi.boolean?.('Finished') || vmi.propertyByName?.('Finished') || null;
+
+        // Helpers
+        const fire = (trigger, side) => {
+          if (!trigger) return;
+          if (typeof trigger.trigger === 'function') trigger.trigger();
+          else if (typeof trigger.fire === 'function') trigger.fire();
+          if (side) vibrate(side);
+        };
+
+        const setStart = (value) => {
+          if (!StartBool) return;
+          if ('value' in StartBool) StartBool.value = value;
+          else if (typeof StartBool.setValue === 'function') StartBool.setValue(value);
+          else if (typeof StartBool.set === 'function') StartBool.set(value);
+        };
+
+        const readBool = (prop) => {
+          if (!prop) return false;
+          let v = (typeof prop.getValue === 'function') ? prop.getValue() : ('value' in prop ? prop.value : false);
+          if (typeof v === 'string') v = v.toLowerCase?.() === 'true';
+          if (typeof v === 'number') v = v >= 0.5;
+          return v === true;
+        };
+
+        const isDead = () => readBool(DeathProp);
+        const isFinished = () => readBool(FinishedProp);
+
+        // --- Keyboard ---
+        window.addEventListener('keydown', (e) => {
+          if (e.repeat) return;
+
+          if (isFinished()) {
+            if (e.code === 'Space') location.reload();
+            return;
+          }
+          if (isDead()) {
+            if (e.code === 'Space') { fire(RestartTrig); setStart(false); }
+            return;
+          }
+
+          // Alive gameplay
+          setStart(true);
+          if (e.key === 'ArrowLeft')  fire(L, 'left');
+          if (e.key === 'ArrowRight') fire(R, 'right');
+        });
+
+        // --- Gamepad mapping ---
+        const AXIS_LX = 0, AXIS_RX = 2;
+        const BTN_A = 0, BTN_B = 1;
+        const BTN_LB = 4, BTN_RB = 5;
+        const DPAD_LEFT = 14, DPAD_RIGHT = 15;
+        const TRIG_LT = 6, TRIG_RT = 7;
+        const threshold = 0.5;
+
+        let prevLeft = false, prevRight = false;
+        let prevLStickLeft = false, prevRStickRight = false;
+
+        function pollGamepad(){
+          const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+          const gp = (pads && pads[0]) || null;
+          if (!gp) { requestAnimationFrame(pollGamepad); return; }
+
+          const axes = gp.axes || [];
+          const btns = gp.buttons || [];
+
+          const lStickLeft   = (axes[AXIS_LX] ?? 0) <= -threshold;
+          const rStickLeft   = (axes[AXIS_RX] ?? 0) <= -threshold;
+          const lStickRight  = (axes[AXIS_LX] ?? 0) >=  threshold;
+          const rStickRight  = (axes[AXIS_RX] ?? 0) >=  threshold;
+
+          const dpadLeft  = !!btns[DPAD_LEFT]?.pressed;
+          const dpadRight = !!btns[DPAD_RIGHT]?.pressed;
+
+          const lt = btns[TRIG_LT]; const rt = btns[TRIG_RT];
+          const leftTriggerPressed  = (lt?.pressed === true) || ((lt?.value ?? 0) > threshold);
+          const rightTriggerPressed = (rt?.pressed === true) || ((rt?.value ?? 0) > threshold);
+
+          const aPressed  = !!btns[BTN_A]?.pressed;
+          const bPressed  = !!btns[BTN_B]?.pressed;
+          const lbPressed = !!btns[BTN_LB]?.pressed;
+          const rbPressed = !!btns[BTN_RB]?.pressed;
+
+          const leftNow  = dpadLeft || leftTriggerPressed || lStickLeft || rStickLeft || bPressed || lbPressed;
+          const rightNow = dpadRight || rightTriggerPressed || lStickRight || rStickRight || aPressed || rbPressed;
+
+          // Only run movement when alive
+          if (!isDead() && !isFinished()) {
+            if (leftNow && !prevLeft)   fire(L, 'left');
+            if (rightNow && !prevRight) fire(R, 'right');
+          }
+
+          // Joystick-only debug logs
+          if (lStickLeft && !prevLStickLeft)   console.log('[GP] Left stick ←');
+          if (rStickRight && !prevRStickRight) console.log('[GP] Right stick →');
+
+          prevLeft = leftNow;
+          prevRight = rightNow;
+          prevLStickLeft = lStickLeft;
+          prevRStickRight = rStickRight;
+
+          requestAnimationFrame(pollGamepad);
+        }
+        requestAnimationFrame(pollGamepad);
+        resizeCanvas();
+      }
+    });
   </script>
 </body>
 </html>
